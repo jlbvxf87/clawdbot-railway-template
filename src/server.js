@@ -171,12 +171,46 @@ async function waitForGatewayReady(opts = {}) {
   return false;
 }
 
+function resolveAllowedOrigins() {
+  const origins = new Set();
+  const override = process.env.OPENCLAW_ALLOWED_ORIGINS?.trim();
+  if (override) {
+    for (const raw of override.split(",")) {
+      const v = raw.trim();
+      if (v) origins.add(v);
+    }
+  }
+  const domain = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  if (domain) origins.add(`https://${domain}`);
+  const staticUrl = process.env.RAILWAY_STATIC_URL?.trim();
+  if (staticUrl) {
+    origins.add(staticUrl.startsWith("http") ? staticUrl : `https://${staticUrl}`);
+  }
+  return [...origins];
+}
+
+async function prepareGatewayConfig() {
+  const origins = resolveAllowedOrigins();
+  if (origins.length === 0) return;
+  const r = await runCmd(
+    OPENCLAW_NODE,
+    clawArgs(["config", "set", "--json", "gateway.controlUi.allowedOrigins", JSON.stringify(origins)]),
+  );
+  if (r.code !== 0) {
+    console.error(`[gateway-config] allowedOrigins set failed code=${r.code}: ${r.output}`);
+  } else {
+    console.log(`[gateway-config] allowedOrigins = ${JSON.stringify(origins)}`);
+  }
+}
+
 async function startGateway() {
   if (gatewayProc) return;
   if (!isConfigured()) throw new Error("Gateway cannot start: not configured");
 
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+  await prepareGatewayConfig();
 
   const args = [
     "gateway",
