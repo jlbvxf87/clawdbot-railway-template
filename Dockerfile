@@ -52,6 +52,7 @@ RUN apt-get update \
     curl \
     gnupg \
     iptables \
+    netcat-openbsd \
     openssh-client \
   && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
   && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list \
