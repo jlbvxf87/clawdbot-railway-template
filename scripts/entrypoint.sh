@@ -7,7 +7,7 @@ if [ "${TS_ENABLED:-}" = "true" ] && [ -n "${TS_AUTHKEY:-}" ]; then
   /usr/sbin/tailscaled \
     --tun=userspace-networking \
     --socks5-server=localhost:1055 \
-    --outbound-http-proxy-listen=localhost:1055 \
+    --outbound-http-proxy-listen=localhost:1099 \
     --state=/var/lib/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock \
     >/tmp/tailscaled.log 2>&1 &
