@@ -1425,6 +1425,87 @@ app.use(requireDashboardAuth, async (req, res) => {
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
 
+async function sendTelegramAlert(text) {
+  const token = process.env.HEARTBEAT_TELEGRAM_BOT_TOKEN?.trim();
+  const chatId = process.env.HEARTBEAT_TELEGRAM_CHAT_ID?.trim();
+  if (!token || !chatId) return;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+    });
+    if (!res.ok) {
+      console.warn(`[heartbeat] telegram send failed: ${res.status} ${await res.text().catch(() => "")}`);
+    }
+  } catch (err) {
+    console.warn(`[heartbeat] telegram send error: ${String(err)}`);
+  }
+}
+
+function startSshHeartbeat() {
+  if (process.env.SSH_HEARTBEAT_ENABLED !== "true") {
+    console.log("[heartbeat] SSH_HEARTBEAT_ENABLED!=true; skipping");
+    return;
+  }
+  const target = process.env.SSH_HEARTBEAT_TARGET?.trim() || "mac";
+  const intervalSec = Math.max(30, Number.parseInt(process.env.SSH_HEARTBEAT_INTERVAL_SEC || "300", 10));
+  const timeoutSec = Math.max(5, Number.parseInt(process.env.SSH_HEARTBEAT_TIMEOUT_SEC || "15", 10));
+  const failThreshold = Math.max(1, Number.parseInt(process.env.SSH_HEARTBEAT_FAIL_THRESHOLD || "3", 10));
+  const hostLabel = process.env.RAILWAY_PUBLIC_DOMAIN || "railway";
+
+  let consecutiveFailures = 0;
+  let alerted = false;
+  let downSince = null;
+
+  async function probe() {
+    const start = Date.now();
+    const result = await runCmd(
+      "ssh",
+      ["-o", `ConnectTimeout=${timeoutSec}`, "-o", "BatchMode=yes", target, "true"],
+      { timeoutMs: (timeoutSec + 5) * 1000 },
+    );
+    const elapsed = Date.now() - start;
+    if (result.code === 0) {
+      if (alerted) {
+        const outageMin = downSince ? Math.round((Date.now() - downSince) / 60000) : 0;
+        console.log(`[heartbeat] ${target} recovered after ${outageMin}m`);
+        await sendTelegramAlert(
+          `🟢 <b>MacBook back online</b>\nHost: <code>${hostLabel}</code>\nOutage: ${outageMin} min\nProbe: ${elapsed} ms`,
+        );
+      } else {
+        console.log(`[heartbeat] ${target} ok (${elapsed} ms)`);
+      }
+      consecutiveFailures = 0;
+      alerted = false;
+      downSince = null;
+    } else {
+      consecutiveFailures += 1;
+      if (!downSince) downSince = Date.now();
+      const snippet = (result.output || "").trim().split("\n").slice(-3).join(" | ").slice(0, 300);
+      console.warn(
+        `[heartbeat] ${target} FAIL #${consecutiveFailures} (exit=${result.code}, ${elapsed} ms): ${snippet}`,
+      );
+      if (consecutiveFailures >= failThreshold && !alerted) {
+        const downMin = Math.round((Date.now() - downSince) / 60000);
+        await sendTelegramAlert(
+          `🔴 <b>MacBook unreachable</b>\nHost: <code>${hostLabel}</code>\nFailed ${consecutiveFailures} consecutive checks (≥${downMin} min)\nLast error: <code>${snippet || "(no output)"}</code>`,
+        );
+        alerted = true;
+      }
+    }
+  }
+
+  console.log(
+    `[heartbeat] enabled: target=${target} interval=${intervalSec}s threshold=${failThreshold} timeout=${timeoutSec}s alerts=${
+      process.env.HEARTBEAT_TELEGRAM_BOT_TOKEN && process.env.HEARTBEAT_TELEGRAM_CHAT_ID ? "on" : "off"
+    }`,
+  );
+  // First probe after a short grace period so the gateway is up first.
+  setTimeout(probe, 30_000);
+  setInterval(probe, intervalSec * 1000);
+}
+
 const server = app.listen(PORT, "0.0.0.0", async () => {
   console.log(`[wrapper] listening on :${PORT}`);
   console.log(`[wrapper] state dir: ${STATE_DIR}`);
@@ -1491,6 +1572,8 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
       console.error(`[wrapper] gateway failed to start at boot: ${String(err)}`);
     }
   }
+
+  startSshHeartbeat();
 });
 
 server.on("upgrade", async (req, socket, head) => {
